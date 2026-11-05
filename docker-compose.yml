@@ -1,0 +1,105 @@
+version: "3.8"
+
+networks:
+  security-tier:
+    name: sec_net_isolated
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+  wireguard-overlay:
+    name: wg_net_overlay
+    driver: bridge
+
+volumes:
+  vaultwarden_data:
+  crowdsec_data:
+  crowdsec_config:
+  wireguard_config:
+  caddy_data:
+  caddy_config:
+
+services:
+  # 1. Zero-Trust WireGuard Gateway
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: wg_gateway
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Kolkata
+      - SERVERURL=vpn.aryancloud.internal
+      - SERVERPORT=51820
+      - PEERS=10
+      - PEERDNS=1.1.1.1,1.0.0.1
+      - INTERNAL_SUBNET=10.13.13.0/24
+      - ALLOWEDIPS=0.0.0.0/0
+      - LOG_CONFS=true
+    volumes:
+      - wireguard_config:/config
+      - /lib/modules:/lib/modules:ro
+    ports:
+      - "51820:51820/udp"
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv4.ip_forward=1
+    restart: unless-stopped
+    networks:
+      - wireguard-overlay
+      - security-tier
+
+  # 2. CrowdSec Behavioral IPS & Detection Engine
+  crowdsec:
+    image: crowdsecurity/crowdsec:v1.6.0
+    container_name: crowdsec_engine
+    environment:
+      - PGID=1000
+      - COLLECTIONS=crowdsecurity/linux crowdsecurity/wireguard crowdsecurity/caddy crowdsecurity/whitelist-good-actors
+    volumes:
+      - crowdsec_config:/etc/crowdsec
+      - crowdsec_data:/var/lib/crowdsec/data
+      - /var/log:/var/log:ro
+      - /var/log/auth.log:/var/log/auth.log:ro
+    restart: unless-stopped
+    networks:
+      - security-tier
+
+  # 3. Vaultwarden Encrypted Password Management Backend
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden_core
+    environment:
+      - WEBSOCKET_ENABLED=true
+      - SIGNUPS_ALLOWED=false
+      - INVITATIONS_ALLOWED=false
+      - SHOW_PASSWORD_HINT=false
+      - DOMAIN=https://vault.aryancloud.internal
+      - LOGIN_RATELIMIT_MAX_BURST=5
+      - LOGIN_RATELIMIT_SECONDS=60
+      - ADMIN_RATELIMIT_MAX_BURST=3
+      - ADMIN_RATELIMIT_SECONDS=300
+      - PASSWORD_ITERATIONS=600000
+    volumes:
+      - vaultwarden_data:/data
+    restart: unless-stopped
+    networks:
+      - security-tier
+
+  # 4. Automated Reverse Proxy with TLS Certificate Rotation
+  caddy_tls:
+    image: caddy:2-alpine
+    container_name: security_ingress
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    networks:
+      - security-tier
