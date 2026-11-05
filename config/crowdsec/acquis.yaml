@@ -1,0 +1,17 @@
+# CrowdSec Log Acquisition Targets
+filenames:
+  - /var/log/auth.log
+  - /var/log/secure
+labels:
+  type: syslog
+---
+filenames:
+  - /var/log/caddy/*.log
+labels:
+  type: caddy
+---
+source: docker
+container_name:
+  - wg_gateway
+labels:
+  type: wireguard
